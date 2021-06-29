@@ -1,0 +1,211 @@
+---
+title: "NCG612 Assignment: <br>Travel to Work Areas for the Dublin Area"
+author: "Susan Edgeworth <br> Student Number: 17704655"
+date: "07/04/2021"
+output: 
+  tufte::tufte_html: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+## Assignment Objective
+Given a data set of travel-to-work counts (ie a travel-to-work table) for the Dublin area, create a set of travel-to-work areas (as in lecture 3) using the Coombes and Bond algorithm. This is the algorithm in the LabourMarketAreas R package. Create a document explaining the analysis and its results, including a map of the travel-to-work areas found.As well as including the code, briefly explain the underlying algorithm and provide a brief discussion of the result.
+
+## Introduction
+This assignment will look at a set of travel-to-work areas using the Coombes and Bond algorithm. Using data for the electoral divisions of Dublin (geojson), journey to work counts (csv) and community names (csv) the algorithm will be implemented and a map of the travel-to-work areas will be displayed with labels of each cluster. The method used here is a way of looking at patterns that occur when people travel to and from work from where they live. The results create functional areas where high populations of people live and work in the same geographical area.
+
+
+## Data required and packages used
+The dub_trips.csv is the counts of the journeys to work between each pair of electoral divisions(EDs) in Dublin. The columns community_live and community_work are the places where people live and work - denoted by the ID codes for Electoral Divisions designated by the Central Statistics Office. The amount is the number of people traveling from the location in community_live to community_work.The lookup.csv provides a link between the community ID code to the name of that area. Finally the dub_eds provides a geojson of the Dublin ED's containing their boundaries. 
+
+ 
+```{r warning=FALSE,message=FALSE, fig.fullwidth = TRUE}
+library(tidyverse)
+library(LabourMarketAreas)
+library(sf)
+library(ggplot2)
+library(convertr)
+library(ggrepel)
+library(kableExtra)
+library(plotly)
+
+dub_trips <- read_csv('dublin_trips.csv')
+knitr::kable(head(dub_trips, 6))
+
+lookup <- read_csv('lookup.csv')
+knitr::kable(head(lookup, 6))
+
+dub_eds <- st_read('dub_eds.geojson',quiet=TRUE)
+ggplot(dub_eds) + geom_sf()
+
+
+```
+ 
+The left_join here is used to assign areas to their particular boundary. This will be used to label areas on the map when the algorithm is implemented.
+ 
+```{r}
+dub_eds<- dub_eds %>% left_join(lookup, by = c('community' = 'community'))
+knitr::kable(head(dub_eds, 6))
+
+```
+## Table showing the origin and destination
+ 
+This rectangular table shows the origin as row names and the destinations as column names. The table shows that people have a tendency to live close to the area where they work, this is shown through the high numbers seen between origin and destination. The code to make this table is implemented through a left_join where the names of the origin are matched to the community names. This is also done with the destination names using a left_join to connect the names  of the areas using the lookup.csv.
+
+ 
+```{r warning=FALSE,message=FALSE}
+od_list <-  dub_trips%>% left_join(lookup,by=c('community_live'='community')) %>%
+rename(Origin=  name) %>%
+left_join(lookup,by=c('community_work'='community')) %>%
+rename(Destination= name) %>% arrange(Origin,Destination)
+od_mat <- od_list %>%
+pivot_wider(id_col='Origin',names_from = 'Destination', values_from='amount',values_fill=0)
+kbl(od_mat[1:8,1:9],format = 'html',booktabs=TRUE,linesep='') %>%
+add_header_above(c(' ','Destination'=8))
+
+
+```
+## Coombes and Bond algorithm and the LabourMarketAreas package
+ 
+Labour Market Areas (LMAs) are districts based on information regarding commuting to work, so that most of the workforce lives and works within the same area. Within certain geographical areas, the use of LMA's have been relevant in assessing the needs for structure and policy. The LabourMarketAreas package used within this assignment implements the LMA process for the Dublin area. The underlying algorithm used is the Coombes and Bonds algorithm. Here a set of Travel-to-Work-Areas are taken from the Central Statistics Office and a contiguity constraint is applied. This means that the Travel-to-Work-Areas are forced into several pieces of land. It looks at all the zones that are on the boundaries of Travel-to-Work-Areas to optimize the performance, switching between each border to produce the best outcome of self containment. The term self containment is the measure of closeness of the boundaries, it is defined both for incoming and outgoing movement. To be considered a proper LMA a cluster of communities must have some minimum characteristics in terms of size and self-containment. For the LMA used in this assignment the minimum size looks at a population of 15,000 and a minimum self containment of 40%. Other LMA's will be explored to look at the sensitivity of results when the levels are changed within the algorithm.  
+
+
+## Looking at the code
+In this code the c1 is the Coombes and Bond algorithm working using the findClusters function. From the dub_trips data a min size of 15000 is applied as well as a min self containment of 40%, this restricts the algorithm to a minimum travel to work area with a population of 15,000 and a closeness of 40%. Target size here is travel to work areas with a population close to 80,000 and a closeness of 50%, this is used to guide the algorithm for optimization of self containment. The first 6 values of the clusters that have been found through the Coombes and Bonds algorithm are shown here, community refers to the area, cluster is the cluster in which that area has been assigned by c1 and residents is the number of people who live within the area. 
+
+The variable assigned as lc is a tibble that takes the middle points of dub_eds and turns them into co-ordinates- taking the centre point of each polygon.   
+This is done to label each polygon with their individual area name, which is used in the final TTWA map using ggrepel.
+
+cl_sf is a left_join of the results obtained from the algorithm to the dub_eds map which will enable the clusters to be mapped using gglot. In the final map labeling has been restricted as the polygons are quite small and therefore this would affect the reading of the map, this is why only a few place names are seen on the map. 
+
+ 
+
+```{r echo = TRUE, fig.width=10, fig.height=10,  fig.fullwidth = TRUE, warning=FALSE, message=FALSE}
+
+cl <- findClusters(dub_trips,minSZ=15000,minSC=0.4,tarSZ = 80000, tarSC=0.5,idcom_type='char')
+
+lc <- st_centroid(dub_eds) %>% st_coordinates()
+lc <- tibble(x=lc[,1],y=lc[,2],name=dub_eds$name)
+
+
+cl_sf <- dub_eds %>%
+left_join(tibble(cl$lma$clusterList)) %>%
+mutate(Cluster= dub_eds$name[(cluster)])
+
+
+
+options(ggrepel.max.overlaps = 10)
+map<- ggplot(cl_sf) +
+geom_sf(col='white',aes(fill=Cluster))+scale_fill_brewer(palette='Dark2') +
+geom_text_repel(data=lc,mapping=aes(x=x,y=y, label = cl_sf$name),
+size=2.5, point.size = NA, point.padding = NA, segment.colour = "black",
+    fontface = 'bold')
+map
+```
+
+## Discussion of the result
+ 
+
+6 TTWA were outputted in the map, Balbriggan Rural, Dun Laoghaire-Sallynoggin West,Lucan-Esker, Saggart and Swords-Forrest. This means that each of these areas have a high population of people who work and live in the same area. The largest area is the Swords to Forrest area, the smallest being Blanchardstown-Blakestown. It seems that most people who live in the city centre also work there, while those who live on the outskirts or in rural areas also live in the same area as they work. There are a few exceptions where there is a group within the Lucan-Esker cluster that work close to the city centre, similarly a group in Blanchardstown-Blakestown also in the centre, for both cases this may mean they work in one area and live in another or vice versa and they are clustered as there is a high population within a community that commutes this way. 
+
+
+## Results using alternative minSZ, minSC, tarSZ tarSC
+
+
+## Map 1
+
+From the dub_trips data a min size of 10,000 is applied as well as a min self containment of 50%, this restricts the algorithm to a minimum travel to work area with a population of 10,000 and a closeness of 50%. Target size here is travel to work areas with a population close to 75,000 and a closeness of 60%. The results here are very different to the previous map, this could be due to the higher size in the min and targ of the self containment, there are only two clusters here which shows that Lucan-Esker and Swords- Forrest have high populations of people who live and work in the same area. 
+
+ 
+```{r fig.fullwidth = TRUE, warning=FALSE,message=FALSE, fig.width=10, fig.height=10}
+cl1 <- findClusters(dub_trips,minSZ=10000,minSC=0.5,tarSZ = 75000, tarSC=0.6,idcom_type='char')
+
+
+
+lc1 <- st_centroid(dub_eds) %>% st_coordinates()
+lc1 <- tibble(x=lc1[,1],y=lc1[,2],name=dub_eds$name)
+
+
+cl_sf1 <- dub_eds %>%
+left_join(tibble(cl1$lma$clusterList)) %>%
+mutate(Cluster1= dub_eds$name[(cluster)])
+
+
+
+options(ggrepel.max.overlaps = 10)
+map1<- ggplot(cl_sf1) +
+geom_sf(col='white',aes(fill=Cluster1)) +
+geom_text_repel(data=lc1,mapping=aes(x=x,y=y, label = cl_sf1$name),
+size=2.5, point.size = NA, point.padding = NA, segment.colour = "black",
+    fontface = 'bold')
+map1
+```
+
+
+## Map 2
+ 
+From the dub_trips data a min size of 12,000 is applied as well as a min self containment of 30%, this restricts the algorithm to a minimum travel to work area with a population of 12,000 and a closeness of 30%. Target size here is travel to work areas with a population close to 60,000 and a closeness of 70%. The results show more clusters of TTWA's and 10 areas are displayed in the map.This map indicates an equal division of areas in that no one area is bigger than the others, only a few places are labelled here to ensure a clear picture. This map has similarities to the first one produced as it has similar clusters such as Balbriggan Rural, Dun Laoghaire-Sallynoggin
+ 
+```{r fig.fullwidth = TRUE, warning=FALSE,message=FALSE,fig.width=10, fig.height=10}
+cl2 <- findClusters(dub_trips,minSZ=12000,minSC=0.3,tarSZ = 60000, tarSC=0.7,idcom_type='char')
+
+
+
+lc2 <- st_centroid(dub_eds) %>% st_coordinates()
+lc2 <- tibble(x=lc2[,1],y=lc2[,2],name=dub_eds$name)
+
+
+cl_sf2 <- dub_eds %>%
+left_join(tibble(cl2$lma$clusterList)) %>%
+mutate(Cluster2= dub_eds$name[(cluster)])
+
+
+options(ggrepel.max.overlaps = 10)
+map2<- ggplot(cl_sf2) +
+geom_sf(col='white',aes(fill=Cluster2))+scale_fill_brewer(palette='Paired') +
+geom_text_repel(data=lc2,mapping=aes(x=x,y=y, label = cl_sf2$name),
+size=2.5, point.size = NA, point.padding = NA,segment.colour = "black",
+    fontface = 'bold')
+
+map2
+
+```
+
+
+
+## Map 3
+ 
+From the dub_trips data a min size of 20,000 is applied as well as a min self containment of 20%, this restricts the algorithm to a minimum travel to work area with a population of 20,000 and a closeness of 20%. Target size here is travel to work areas with a population close to 50,000 and a closeness of 40%. The result here shows more clusters of TTWA's, this may be due to the small level that is specified in the target self containment. A total of 14 clusters are displayed, some clusters are similar to the other maps, Balbriggan Rural still seems to have its own TTWA as well as Swords-Forrest although this cluster is smaller than the other maps.
+ 
+```{r fig.fullwidth = TRUE, warning=FALSE,message=FALSE,fig.width=10, fig.height=10}
+cl3 <- findClusters(dub_trips,minSZ=20000,minSC=0.2,tarSZ = 50000, tarSC=0.4,idcom_type='char')
+
+
+
+lc3 <- st_centroid(dub_eds) %>% st_coordinates()
+lc3 <- tibble(x=lc3[,1],y=lc3[,2],name=dub_eds$name)
+
+
+cl_sf3 <- dub_eds %>%
+left_join(tibble(cl3$lma$clusterList)) %>%
+mutate(Cluster3= dub_eds$name[(cluster)])
+
+
+options(ggrepel.max.overlaps = 10)
+map3<- ggplot(cl_sf3) +
+geom_sf(col='white',aes(fill=Cluster3))+
+geom_text_repel(data=lc3,mapping=aes(x=x,y=y, label = cl_sf3$name),
+size=2.5, point.size = NA, point.padding = NA,segment.colour = "black",
+    fontface = 'bold')
+
+
+map3
+```
+## Final Comments
+
+ 
+The Coombes and Bond algorithm used in this assignment has produced different outcomes displayed on the Dublin ED's map. Changing the minSZ, minSC, tarSZ and tarSC results in the cluster catagories to grow or shrink depending on the input. In terms of the best result, it is difficult to distinguish which map resulted in the best TTWA, however the first map produced seems the most comprehensive TTWA as the number of clusters is small and divided out somewhat evenly. 
+ 
